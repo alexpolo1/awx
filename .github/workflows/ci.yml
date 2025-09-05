@@ -65,12 +65,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install kustomize
+      - name: Install kustomize and kubectl
         run: |
           set -e
           if ! command -v kustomize >/dev/null 2>&1; then
             curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
             sudo mv kustomize /usr/local/bin/kustomize || true
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
           fi
 
       - name: Run kustomize build for known directories
@@ -84,6 +89,21 @@ jobs:
             fi
           done
           $ok || (echo "One or more kustomize builds failed" && exit 1)
+
+      - name: Kustomize -> kubectl --dry-run=client validation
+        run: |
+          set -e
+          any=false
+          for d in config config/*; do
+            if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+              echo "Validating manifests from $d with kubectl --dry-run=client"
+              kustomize build "$d" | kubectl apply --dry-run=client -f - || { echo "kubectl --dry-run failed for $d"; exit 1; }
+              any=true
+            fi
+          done
+          if [ "$any" = false ]; then
+            echo "No kustomize directories found to validate with kubectl"
+          fi
 
   release:
     name: Create release artifact
