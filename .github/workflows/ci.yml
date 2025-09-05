@@ -7,9 +7,97 @@ on:
     branches: [ main, master ]
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check awx-local-setup files
+        run: |
+          echo "Listing awx-local-setup"
+          ls -la awx-local-setup || true
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install linters
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck yamllint gettext-base
+      - name: Shellcheck
+        run: |
+          set -e
+          files=$(git ls-files 'awx-local-setup/*.sh' || true)
+          [ -z "$files" ] || shellcheck -x $files
+      - name: YAML lint
+        run: |
+          set -e
+          files=$(git ls-files '*.yml' '*.yaml' || true)
+          [ -z "$files" ] || (echo "$files" | xargs yamllint -d "extends: default")
+      - name: Dry-run setup script
+        run: |
+          set -e
+          chmod +x awx-local-setup/setup_awx_local.sh
+          ./awx-local-setup/setup_awx_local.sh --dry-run --repo-root="$(pwd)"
+
+  kustomize-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize and kubectl
+        run: |
+          set -e
+          if ! command -v kustomize >/dev/null 2>&1; then
+            curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
+            sudo mv kustomize /usr/local/bin/kustomize || true
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+      - name: Build and validate kustomize
+        run: |
+          set -e
+          for d in config config/*; do
+            [ -d "$d" ] || continue
+            if [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ]; then
+              kustomize build "$d" | kubectl apply --dry-run=client -f -
+            fi
+          done
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [lint, kustomize-validate]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create tarball
+        run: tar -czf awx-local-setup.tar.gz awx-local-setup
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: awx-local-setup
+          path: awx-local-setup.tar.gz
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
   lint:
     name: Lint scripts & YAML
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-20.04]
@@ -71,6 +159,258 @@ jobs:
           if ! command -v kustomize >/dev/null 2>&1; then
             curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
             sudo mv kustomize /usr/local/bin/kustomize || true
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+
+      name: CI
+
+      on:
+        push:
+          branches: [ main, master ]
+        pull_request:
+          branches: [ main, master ]
+
+      jobs:
+        lint:
+          name: Lint scripts & YAML
+          runs-on: ${{ matrix.os }}
+          strategy:
+            matrix:
+              os: [ubuntu-22.04, ubuntu-20.04]
+          steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install linters
+              run: |
+                sudo apt-get update -y
+                sudo apt-get install -y shellcheck yamllint gettext-base
+
+            - name: Shellcheck - scan shell scripts
+              run: |
+                set -e
+                files=$(git ls-files 'awx-local-setup/*.sh' || true)
+                if [ -n "$files" ]; then
+                  echo "Running shellcheck on: $files"
+                  shellcheck -x $files
+                else
+                  echo "No shell scripts found to lint"
+                fi
+
+            - name: Shell syntax check
+              run: |
+                set -e
+                for f in awx-local-setup/*.sh; do
+                  [ -f "$f" ] || continue
+                  echo "Checking bash syntax: $f"
+                  bash -n "$f"
+                done
+
+            - name: YAML lint
+              run: |
+                set -e
+                files=$(git ls-files '*.yml' '*.yaml' || true)
+                if [ -n "$files" ]; then
+                  echo "$files" | xargs yamllint -d "extends: default"
+                else
+                  echo "No YAML files found to lint"
+                fi
+
+            - name: Dry-run setup script
+              run: |
+                set -e
+                chmod +x awx-local-setup/setup_awx_local.sh
+                ./awx-local-setup/setup_awx_local.sh --dry-run --repo-root="$(pwd)"
+
+        kustomize-validate:
+          name: Validate kustomize builds (if any)
+          runs-on: ubuntu-latest
+          steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install kustomize and kubectl
+              run: |
+                set -e
+                if ! command -v kustomize >/dev/null 2>&1; then
+                  curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
+                  sudo mv kustomize /usr/local/bin/kustomize || true
+                fi
+                if ! command -v kubectl >/dev/null 2>&1; then
+                  curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+                  chmod +x kubectl
+                  sudo mv kubectl /usr/local/bin/kubectl
+                fi
+
+            - name: Run kustomize build for known directories
+              run: |
+                set -e
+                ok=true
+                for d in config config/*; do
+                  if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+                    echo "Building kustomize for $d"
+                    kustomize build "$d" >/dev/null || { ok=false; echo "kustomize build failed for $d"; }
+                  fi
+                done
+                $ok || (echo "One or more kustomize builds failed" && exit 1)
+
+            - name: Kustomize -> kubectl --dry-run=client validation
+              run: |
+                set -e
+                any=false
+                for d in config config/*; do
+                  if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+                    echo "Validating manifests from $d with kubectl --dry-run=client"
+                    kustomize build "$d" | kubectl apply --dry-run=client -f - || { echo "kubectl --dry-run failed for $d"; exit 1; }
+                    any=true
+                  fi
+                done
+                if [ "$any" = false ]; then
+                  echo "No kustomize directories found to validate with kubectl"
+                fi
+
+        release:
+          name: Create release artifact
+          runs-on: ubuntu-latest
+          needs: [lint, kustomize-validate]
+          steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Create tarball
+              run: |
+                tar -czf awx-local-setup.tar.gz awx-local-setup
+
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                name: awx-local-setup
+                path: awx-local-setup.tar.gz
+            push:
+              branches: [ main, master ]
+            pull_request:
+              branches: [ main, master ]
+
+          jobs:
+            lint:
+              name: Lint scripts & YAML
+              runs-on: ${{ matrix.os }}
+              strategy:
+                matrix:
+                  os: [ubuntu-22.04, ubuntu-20.04]
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v4
+
+                - name: Install linters
+                  run: |
+                    sudo apt-get update -y
+                    sudo apt-get install -y shellcheck yamllint gettext-base
+
+                - name: Shellcheck - scan shell scripts
+                  run: |
+                    set -e
+                    files=$(git ls-files 'awx-local-setup/*.sh' || true)
+                    if [ -n "$files" ]; then
+                      echo "Running shellcheck on: $files"
+                      shellcheck -x $files
+                    else
+                      echo "No shell scripts found to lint"
+                    fi
+
+                - name: Shell syntax check
+                  run: |
+                    set -e
+                    for f in awx-local-setup/*.sh; do
+                      [ -f "$f" ] || continue
+                      echo "Checking bash syntax: $f"
+                      bash -n "$f"
+                    done
+
+                - name: YAML lint
+                  run: |
+                    set -e
+                    files=$(git ls-files '*.yml' '*.yaml' || true)
+                    if [ -n "$files" ]; then
+                      echo "$files" | xargs yamllint -d "extends: default"
+                    else
+                      echo "No YAML files found to lint"
+                    fi
+
+                - name: Dry-run setup script
+                  run: |
+                    set -e
+                    chmod +x awx-local-setup/setup_awx_local.sh
+                    ./awx-local-setup/setup_awx_local.sh --dry-run --repo-root="$(pwd)"
+
+            kustomize-validate:
+              name: Validate kustomize builds (if any)
+              runs-on: ubuntu-latest
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v4
+
+                - name: Install kustomize and kubectl
+                  run: |
+                    set -e
+                    if ! command -v kustomize >/dev/null 2>&1; then
+                      curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
+                      sudo mv kustomize /usr/local/bin/kustomize || true
+                    fi
+                    if ! command -v kubectl >/dev/null 2>&1; then
+                      curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+                      chmod +x kubectl
+                      sudo mv kubectl /usr/local/bin/kubectl
+                    fi
+
+                - name: Run kustomize build for known directories
+                  run: |
+                    set -e
+                    ok=true
+                    for d in config config/*; do
+                      if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+                        echo "Building kustomize for $d"
+                        kustomize build "$d" >/dev/null || { ok=false; echo "kustomize build failed for $d"; }
+                      fi
+                    done
+                    $ok || (echo "One or more kustomize builds failed" && exit 1)
+
+                - name: Kustomize -> kubectl --dry-run=client validation
+                  run: |
+                    set -e
+                    any=false
+                    for d in config config/*; do
+                      if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+                        echo "Validating manifests from $d with kubectl --dry-run=client"
+                        kustomize build "$d" | kubectl apply --dry-run=client -f - || { echo "kubectl --dry-run failed for $d"; exit 1; }
+                        any=true
+                      fi
+                    done
+                    if [ "$any" = false ]; then
+                      echo "No kustomize directories found to validate with kubectl"
+                    fi
+
+            release:
+              name: Create release artifact
+              runs-on: ubuntu-latest
+              needs: [lint, kustomize-validate]
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@v4
+
+                - name: Create tarball
+                  run: |
+                    tar -czf awx-local-setup.tar.gz awx-local-setup
+
+                - name: Upload artifact
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: awx-local-setup
+                    path: awx-local-setup.tar.gz
           fi
           if ! command -v kubectl >/dev/null 2>&1; then
             curl -sSL -o kubectl https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
