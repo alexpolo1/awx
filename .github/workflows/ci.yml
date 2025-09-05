@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint:
+    name: Lint scripts & YAML
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install linters
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck yamllint gettext-base
+
+      - name: Shellcheck - scan shell scripts
+        run: |
+          set -e
+          files=$(git ls-files 'awx-local-setup/*.sh' || true)
+          if [ -n "$files" ]; then
+            echo "Running shellcheck on: $files"
+            shellcheck -x $files
+          else
+            echo "No shell scripts found to lint"
+          fi
+
+      - name: Shell syntax check
+        run: |
+          set -e
+          for f in awx-local-setup/*.sh; do
+            [ -f "$f" ] || continue
+            echo "Checking bash syntax: $f"
+            bash -n "$f"
+          done
+
+      - name: YAML lint
+        run: |
+          set -e
+          files=$(git ls-files '*.yml' '*.yaml' || true)
+          if [ -n "$files" ]; then
+            echo "$files" | xargs yamllint -d "extends: default"
+          else
+            echo "No YAML files found to lint"
+          fi
+
+  kustomize-validate:
+    name: Validate kustomize builds (if any)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          set -e
+          if ! command -v kustomize >/dev/null 2>&1; then
+            curl -sSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s 5.0.0
+            sudo mv kustomize /usr/local/bin/kustomize || true
+          fi
+
+      - name: Run kustomize build for known directories
+        run: |
+          set -e
+          ok=true
+          for d in config config/*; do
+            if [ -d "$d" ] && ( [ -f "$d/kustomization.yaml" ] || [ -f "$d/kustomization.yml" ] ); then
+              echo "Building kustomize for $d"
+              kustomize build "$d" >/dev/null || { ok=false; echo "kustomize build failed for $d"; }
+            fi
+          done
+          $ok || (echo "One or more kustomize builds failed" && exit 1)
