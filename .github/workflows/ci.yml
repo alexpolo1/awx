@@ -9,7 +9,10 @@ on:
 jobs:
   lint:
     name: Lint scripts & YAML
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-20.04]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,6 +52,12 @@ jobs:
             echo "No YAML files found to lint"
           fi
 
+      - name: Dry-run setup script
+        run: |
+          set -e
+          chmod +x awx-local-setup/setup_awx_local.sh
+          ./awx-local-setup/setup_awx_local.sh --dry-run --repo-root="$(pwd)"
+
   kustomize-validate:
     name: Validate kustomize builds (if any)
     runs-on: ubuntu-latest
@@ -75,3 +84,21 @@ jobs:
             fi
           done
           $ok || (echo "One or more kustomize builds failed" && exit 1)
+
+  release:
+    name: Create release artifact
+    runs-on: ubuntu-latest
+    needs: [lint, kustomize-validate]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create tarball
+        run: |
+          tar -czf awx-local-setup.tar.gz awx-local-setup
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: awx-local-setup
+          path: awx-local-setup.tar.gz
